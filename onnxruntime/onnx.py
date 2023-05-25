@@ -3,7 +3,8 @@ import numpy as np
 import argparse
 import onnxruntime as ort
 import math
-
+import glob
+import time
 
 class my_nanodet():
     def __init__(self, model_pb_path, label_path, prob_threshold=0.4, iou_threshold=0.3):
@@ -16,7 +17,7 @@ class my_nanodet():
         self.std = np.array([57.375, 57.12, 58.395], dtype=np.float32).reshape(1, 1, 3)
         so = ort.SessionOptions()
         so.log_severity_level = 3
-        self.net = ort.InferenceSession(model_pb_path, so)
+        self.net = ort.InferenceSession(model_pb_path, so, providers=['CUDAExecutionProvider'])
         self.input_shape = (self.net.get_inputs()[0].shape[2], self.net.get_inputs()[0].shape[3])
         self.reg_max = int((self.net.get_outputs()[0].shape[-1] - self.num_classes) / 4) - 1
         self.project = np.arange(self.reg_max + 1)
@@ -109,7 +110,7 @@ class my_nanodet():
         confidences = np.max(mlvl_scores, axis=1)  ####max_class_confidence
         
         indices = cv2.dnn.NMSBoxes(bboxes_wh.tolist(), confidences.tolist(), self.prob_threshold,
-                                   self.iou_threshold).flatten()
+                                   self.iou_threshold)
         if len(indices) > 0:
             mlvl_bboxes = mlvl_bboxes[indices]
             confidences = confidences[indices]
@@ -135,8 +136,9 @@ class my_nanodet():
         img, newh, neww, top, left = self.resize_image(srcimg, keep_ratio=self.keep_ratio)
         img = self._normalize(img)
         blob = np.expand_dims(np.transpose(img, (2, 0, 1)), axis=0)
-        
+        start = time.time()
         outs = self.net.run(None, {self.net.get_inputs()[0].name: blob})[0].squeeze(axis=0)
+        print('inference time: {}'.format(time.time() - start))
         det_bboxes, det_conf, det_classid = self.post_process(outs)
         
         # results = []
@@ -148,8 +150,8 @@ class my_nanodet():
                                                                                srcimg.shape[0])
             # results.append((xmin, ymin, xmax, ymax, self.classes[det_classid[i]], det_conf[i]))
             cv2.rectangle(srcimg, (xmin, ymin), (xmax, ymax), (0, 0, 255), thickness=1)
-            print(self.classes[det_classid[i]] + ': ' + str(round(det_conf[i], 3)))
-            cv2.putText(srcimg, self.classes[det_classid[i]] + ': ' + str(round(det_conf[i], 3)), (xmin, ymin - 10),
+            #print(self.classes[det_classid[i]] + ': ' + str(round(det_conf[i], 3)))
+            cv2.putText(srcimg, self.classes[det_classid[i]], (xmin, ymin - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), thickness=1)
         #         cv2.imwrite('result.jpg', srcimg)
         return srcimg
@@ -159,20 +161,29 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--imgpath', type=str, default='imgs/person.jpg', help="image path")
     parser.add_argument('--modelpath', type=str, default='onnxmodel/nanodet-plus-m_320.onnx',
-                        choices=["onnxmodel/nanodet-plus-m_320.onnx", "onnxmodel/nanodet-plus-m_416.onnx",
-                                 "onnxmodel/nanodet-plus-m-1.5x_320.onnx", "onnxmodel/nanodet-plus-m-1.5x_416.onnx"],
                         help="onnx filepath")
     parser.add_argument('--classfile', type=str, default='onnxmodel/coco.names', help="classname filepath")
     parser.add_argument('--confThreshold', default=0.4, type=float, help='class confidence')
     parser.add_argument('--nmsThreshold', default=0.6, type=float, help='nms iou thresh')
     args = parser.parse_args()
     
-    srcimg = cv2.imread(args.imgpath)
-    net = my_nanodet(args.modelpath, args.classfile, prob_threshold=args.confThreshold, iou_threshold=args.nmsThreshold)
-    srcimg = net.detect(srcimg)
     
-    winName = 'Deep learning object detection in ONNXRuntime'
-    cv2.namedWindow(winName, cv2.WINDOW_NORMAL)
-    cv2.imshow(winName, srcimg)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    files = glob.glob("/home/lht/Desktop/EdgeLab/datasets/digital_meter/valid/*.jpg")
+    for idx, file in enumerate(files):
+        srcimg = cv2.imread(file)
+        
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, srcimg = cap.read()
+        if not ret:
+            break
+        
+        net = my_nanodet(args.modelpath, args.classfile, prob_threshold=args.confThreshold, iou_threshold=args.nmsThreshold)
+        srcimg = net.detect(srcimg)
+        
+        winName = 'Deep learning object detection in ONNXRuntime'
+        #cv2.namedWindow(winName, cv2.WINDOW_NORMAL)
+        cv2.imshow(winName, srcimg)
+        if cv2.waitKey(1) == ord('q'):
+            break
+    #cv2.destroyAllWindows()
